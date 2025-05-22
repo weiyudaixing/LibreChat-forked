@@ -2,16 +2,29 @@ import React, { useEffect, useCallback, useRef, useState } from 'react';
 import throttle from 'lodash/throttle';
 import { visit } from 'unist-util-visit';
 import { useSetRecoilState } from 'recoil';
+import { useLocation } from 'react-router-dom';
 import type { Pluggable } from 'unified';
 import type { Artifact } from '~/common';
 import { useMessageContext, useArtifactContext } from '~/Providers';
 import { artifactsState } from '~/store/artifacts';
+import { logger, extractContent } from '~/utils';
 import ArtifactButton from './ArtifactButton';
-import { logger } from '~/utils';
 
 export const artifactPlugin: Pluggable = () => {
   return (tree) => {
-    visit(tree, ['textDirective', 'leafDirective', 'containerDirective'], (node) => {
+    visit(tree, ['textDirective', 'leafDirective', 'containerDirective'], (node, index, parent) => {
+      if (node.type === 'textDirective') {
+        const replacementText = `:${node.name}`;
+        if (parent && Array.isArray(parent.children) && typeof index === 'number') {
+          parent.children[index] = {
+            type: 'text',
+            value: replacementText,
+          };
+        }
+      }
+      if (node.name !== 'artifact') {
+        return;
+      }
       node.data = {
         hName: node.name,
         hProperties: node.attributes,
@@ -22,29 +35,18 @@ export const artifactPlugin: Pluggable = () => {
   };
 };
 
-const extractContent = (
-  children: React.ReactNode | { props: { children: React.ReactNode } } | string,
-): string => {
-  if (typeof children === 'string') {
-    return children;
-  }
-  if (React.isValidElement(children)) {
-    return extractContent((children.props as { children?: React.ReactNode }).children);
-  }
-  if (Array.isArray(children)) {
-    return children.map(extractContent).join('');
-  }
-  return '';
-};
+const defaultTitle = 'untitled';
+const defaultType = 'unknown';
+const defaultIdentifier = 'lc-no-identifier';
 
 export function Artifact({
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   node,
   ...props
 }: Artifact & {
   children: React.ReactNode | { props: { children: React.ReactNode } };
   node: unknown;
 }) {
+  const location = useLocation();
   const { messageId } = useMessageContext();
   const { getNextIndex, resetCounter } = useArtifactContext();
   const artifactIndex = useRef(getNextIndex(false)).current;
@@ -62,19 +64,18 @@ export function Artifact({
     const content = extractContent(props.children);
     logger.log('artifacts', 'updateArtifact: content.length', content.length);
 
-    if (!content || content.trim() === '') {
-      return;
-    }
-
-    const title = props.title ?? 'Untitled Artifact';
-    const type = props.type ?? 'unknown';
-    const identifier = props.identifier ?? 'no-identifier';
+    const title = props.title ?? defaultTitle;
+    const type = props.type ?? defaultType;
+    const identifier = props.identifier ?? defaultIdentifier;
     const artifactKey = `${identifier}_${type}_${title}_${messageId}`
       .replace(/\s+/g, '_')
       .toLowerCase();
 
     throttledUpdateRef.current(() => {
       const now = Date.now();
+      if (artifactKey === `${defaultIdentifier}_${defaultType}_${defaultTitle}_${messageId}`) {
+        return;
+      }
 
       const currentArtifact: Artifact = {
         id: artifactKey,
@@ -86,6 +87,10 @@ export function Artifact({
         index: artifactIndex,
         lastUpdateTime: now,
       };
+
+      if (!location.pathname.includes('/c/')) {
+        return setArtifact(currentArtifact);
+      }
 
       setArtifacts((prevArtifacts) => {
         if (
@@ -111,6 +116,7 @@ export function Artifact({
     props.identifier,
     messageId,
     artifactIndex,
+    location.pathname,
   ]);
 
   useEffect(() => {
